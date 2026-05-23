@@ -1,57 +1,65 @@
 package differ
 
-import "strings"
+import (
+	"strings"
 
-// IgnoreRule describes a single rule for suppressing drift items.
-type IgnoreRule struct {
-	// AddressPrefix, if non-empty, suppresses any resource whose address
-	// starts with this string (e.g. "module.legacy").
-	AddressPrefix string
+	"github.com/user/stackdiff/internal/differ/model"
+)
 
-	// AttributeKey, if non-empty, suppresses changes to this specific
-	// attribute key across all resources (e.g. "tags.LastModified").
-	AttributeKey string
-}
-
-// IgnoreList holds a collection of IgnoreRules.
+// IgnoreList holds rules for suppressing resources or attributes from drift output.
 type IgnoreList struct {
-	rules []IgnoreRule
+	resourcePrefixes []string
+	attributeKeys    []string
 }
 
-// NewIgnoreList constructs an IgnoreList from a slice of rules.
-func NewIgnoreList(rules []IgnoreRule) *IgnoreList {
-	return &IgnoreList{rules: rules}
+// NewIgnoreList constructs an IgnoreList from prefix and attribute key slices.
+func NewIgnoreList(resourcePrefixes, attributeKeys []string) *IgnoreList {
+	return &IgnoreList{
+		resourcePrefixes: resourcePrefixes,
+		attributeKeys:    attributeKeys,
+	}
 }
 
-// SuppressResource returns true when the given resource address matches
-// any address-prefix rule.
+// SuppressResource returns true when the resource address matches any configured prefix.
 func (il *IgnoreList) SuppressResource(address string) bool {
-	for _, r := range il.rules {
-		if r.AddressPrefix != "" && strings.HasPrefix(address, r.AddressPrefix) {
+	for _, prefix := range il.resourcePrefixes {
+		if strings.HasPrefix(address, prefix) {
 			return true
 		}
 	}
 	return false
 }
 
-// FilterAttributes removes attribute keys that are matched by any
-// attribute-key rule, returning a new map without those keys.
-func (il *IgnoreList) FilterAttributes(attrs map[string]string) map[string]string {
-	if len(attrs) == 0 {
+// FilterAttributes removes attribute entries whose keys match any configured key rule.
+func (il *IgnoreList) FilterAttributes(attrs map[string]model.AttributeDiff) map[string]model.AttributeDiff {
+	if len(il.attributeKeys) == 0 {
 		return attrs
 	}
-	out := make(map[string]string, len(attrs))
+	out := make(map[string]model.AttributeDiff, len(attrs))
 	for k, v := range attrs {
-		if !il.suppressAttr(k) {
+		if !il.matchesAttributeKey(k) {
 			out[k] = v
 		}
 	}
 	return out
 }
 
-func (il *IgnoreList) suppressAttr(key string) bool {
-	for _, r := range il.rules {
-		if r.AttributeKey != "" && r.AttributeKey == key {
+// Apply filters a slice of DriftItems, removing suppressed resources and stripping ignored attributes.
+func (il *IgnoreList) Apply(items []model.DriftItem) []model.DriftItem {
+	result := make([]model.DriftItem, 0, len(items))
+	for _, item := range items {
+		if il.SuppressResource(item.Address) {
+			continue
+		}
+		item.Attributes = il.FilterAttributes(item.Attributes)
+		result = append(result, item)
+	}
+	return result
+}
+
+func (il *IgnoreList) matchesAttributeKey(key string) bool {
+	for _, rule := range il.attributeKeys {
+		if key == rule || strings.HasPrefix(key, rule+".") {
 			return true
 		}
 	}
